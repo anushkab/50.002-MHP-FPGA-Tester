@@ -1,0 +1,6 @@
+NET "io_fpga0" LOC = P51 | IOSTANDARD = LVTTL;
+NET "io_fpga1" LOC = P41 | IOSTANDARD = LVTTL;
+
+NET "io_adder0" LOC = P35 | IOSTANDARD = LVTTL;
+NET "io_adder1" LOC = P33 | IOSTANDARD = LVTTL;
+NET "io_adder2" LOC = P30 | IOSTANDARD = LVTTL;

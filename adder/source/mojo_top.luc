@@ -1,0 +1,421 @@
+module mojo_top (
+    input clk,              // 50MHz clock
+    input rst_n,            // reset button (active low)
+    output led [8],         // 8 user controllable LEDs
+    input cclk,             // configuration clock, AVR ready when high
+    output spi_miso,        // AVR SPI MISO
+    input spi_ss,           // AVR SPI Slave Select
+    input spi_mosi,         // AVR SPI MOSI
+    input spi_sck,          // AVR SPI Clock
+    output spi_channel [4], // AVR general purpose pins (used by default to select ADC channel)
+    input avr_tx,           // AVR TX (FPGA RX)
+    output avr_rx,          // AVR RX (FPGA TX)
+    input avr_rx_busy,      // AVR RX buffer full
+    output io_led [3][8],   // LEDs on IO Shield
+    output io_seg [8],      // 7-segment LEDs on IO Shield
+    output io_sel [4],      // Digit select on IO Shield
+    input io_button [5],    // 5 buttons on IO Shield
+    input io_dip [3][8],     // DIP switches on IO Shield
+    output io_adder0,
+    output io_adder1,
+    output io_adder2,
+    input io_fpga0,
+    input io_fpga1
+  ) {
+  
+  sig rst;                  // reset signal
+  sig mode;
+  sig restart;  
+  sig bit0;
+  sig bit1;
+  sig customclk;
+  sig errorcheck;
+  const TIME = 25;
+  const TOL = 29;
+  
+  fsm sm(.clk(clk), .rst(rst)) = {STATE0, STATE1, STATE2, STATE3, STATE4, STATE5, STATE6, STATE7, END, ERR0, ERR1, ERR2, ERR3, ERR4, ERR5, ERR6, ERR7};
+  dff counter[TIME](.clk(clk), .rst(rst));
+  dff errorcount[TOL](.clk(clk), .rst(rst));
+  // fsm for testing and counter for get next step function, inlcudes error states for error detection
+  
+  .clk(clk) {
+    // The reset conditioner is used to synchronize the reset signal to the FPGA
+    // clock. This ensures the entire FPGA comes out of reset at the same time.
+    reset_conditioner reset_cond;
+    
+    .rst(rst) {
+      multi_seven_seg seg;    
+    }
+  }
+  
+  always {
+    reset_cond.in = ~rst_n; // input raw inverted reset signal
+    rst = reset_cond.out;   // conditioned reset
+    
+    led = 8h00;             // turn LEDs off
+    spi_miso = bz;          // not using SPI
+    spi_channel = bzzzz;    // not using flags
+    avr_rx = bz;            // not using serial port
+    
+    io_led = 3x{{8h00}};    // turn LEDs off
+    io_seg = ~seg.seg;          // sets LED segments
+    io_sel = ~seg.sel;           // selects LED digits
+    
+    mode = io_dip[0][7];    // select manual testing mode or fsm testing mode
+    seg.values = {4hf, 4hf, 4hf, 4hf};  // sets the default value of the led segments to off
+    
+    if (mode) {
+    
+      io_adder0 = 0;        // default output to A of full adder 
+      io_adder1 = 0;        // default output to B of full adder
+      io_adder2 = 0;        // current output to Cin of full adder
+      bit0 = io_fpga0;      // input of S from full adder
+      bit1 = io_fpga1;      // input of Cout from full adder
+      
+      restart = io_button[0];  // manual restart button for fsm, revert to state0
+      counter.d = counter.q + 1;  // increment for counter every clock cycle     
+      
+      errorcount.d = errorcount.q + 1;
+      
+      if (counter.q[TIME-1] == 1) {
+        customclk = 1;      // signal to get next state
+        io_led[2][7] = 1;
+      } else {
+        customclk = 0;
+        io_led[2][7] = 0;
+      }
+      
+      if (errorcount.q[TOL-1] == 1) {
+        errorcheck = 1;
+        io_led[2][6] = 1;
+      } else {
+        errorcheck = 0;
+        io_led[2][6] = 0;
+      }
+      
+      case (sm.q) {
+        
+        sm.STATE0:
+          io_adder0 = 0;    // output to A
+          io_adder1 = 0;    // output to B
+          io_adder2 = 0;    // output to Cin
+          io_led[0][0] = 1;  // LED to track state progression
+          seg.values = {4hf, 4h0, 4h0, 4h0};  // display current output for easy tracking to LED segments
+              
+          if (customclk == 1) {
+            if (restart == 0 && bit0 == 0 && bit1 == 0) {
+              errorcount.d = 0;
+              sm.d = sm.STATE1;  // next state if inputs from adder are correct
+            } else if (errorcheck == 1) {
+              sm.d = sm.ERR0;
+            } else {
+              sm.d = sm.STATE0;
+            }
+          }
+          
+        sm.STATE1:
+          io_adder0 = 1;
+          io_adder1 = 0;
+          io_adder2 = 0; 
+          io_led[0][1] = 1; 
+          seg.values = {4hf, 4h0, 4h0, 4h1};
+          
+          if (customclk == 1) {
+            if (restart == 0 && bit0 == 1 && bit1 == 0) {
+              errorcount.d = 0;
+              sm.d = sm.STATE2;
+            } else if (errorcheck == 1) {
+              sm.d = sm.ERR1;
+            } else if (restart == 1) {
+              sm.d = sm.STATE0;
+            } else { 
+              sm.d = sm.STATE1;
+            }
+          }
+            
+        sm.STATE2:
+          io_adder0 = 1;
+          io_adder1 = 1;
+          io_adder2 = 0;
+          io_led[0][2] = 1;
+          seg.values = {4hf, 4h0, 4h1, 4h1};
+          
+          if (customclk == 1) {
+            if (restart == 0 && bit0 == 0 && bit1 == 1) {
+              errorcount.d = 0;
+              sm.d = sm.STATE3;
+            } else if (errorcheck == 1) {
+              sm.d = sm.ERR2;
+            } else if (restart == 1) {
+              sm.d = sm.STATE0;
+            } else { 
+              sm.d = sm.STATE2;
+            }
+          }
+          
+        sm.STATE3:
+          io_adder0 = 0;
+          io_adder1 = 1;
+          io_adder2 = 0; 
+          io_led[0][3] = 1;
+          seg.values = {4hf, 4h0, 4h1, 4h0};
+          
+          if (customclk == 1) {
+            if (restart == 0 && bit0 == 1 && bit1 == 0) {
+              errorcount.d = 0;
+              sm.d = sm.STATE4;
+            } else if (errorcheck == 1) {
+              sm.d = sm.ERR3;
+            } else if (restart == 1) {
+              sm.d = sm.STATE0;
+            } else { 
+              sm.d = sm.STATE3;
+            }
+          }
+                      
+        sm.STATE4:
+          io_adder0 = 0;
+          io_adder1 = 1;
+          io_adder2 = 1; 
+          io_led[0][4] = 1;
+          seg.values = {4hf, 4h1, 4h1, 4h0};
+          
+          if (customclk == 1) {
+            if (restart == 0 && bit0 == 0 && bit1 == 1) {
+              errorcount.d = 0;
+              sm.d = sm.STATE5;
+            } else if (errorcheck == 1) {
+              sm.d = sm.ERR4;
+            } else if (restart == 1) {
+              sm.d = sm.STATE0;
+            } else { 
+              sm.d = sm.STATE4;
+            }
+          }
+          
+        sm.STATE5:
+          io_adder0 = 0;
+          io_adder1 = 0;
+          io_adder2 = 1;
+          io_led[0][5] = 1; 
+          seg.values = {4hf, 4h1, 4h0, 4h0};
+          
+          if (customclk == 1) {
+            if (restart == 0 && bit0 == 1 && bit1 == 0) {
+              errorcount.d = 0;
+              sm.d = sm.STATE6;
+            } else if (errorcheck == 1) {
+              sm.d = sm.ERR5;
+            } else if (restart == 1) {
+              sm.d = sm.STATE0;
+            } else { 
+              sm.d = sm.STATE5;
+            }
+          }
+          
+        sm.STATE6:
+          io_adder0 = 1;
+          io_adder1 = 0;
+          io_adder2 = 1; 
+          io_led[0][6] = 1;
+          seg.values = {4hf, 4h1, 4h1, 4h0};
+          
+          if (customclk == 1) {
+            if (restart == 0 && bit0 == 0 && bit1 == 1) {
+              errorcount.d = 0;
+              sm.d = sm.STATE7;
+            } else if (errorcheck == 1) {
+              sm.d = sm.ERR6;
+            } else if (restart == 1) {
+              sm.d = sm.STATE0;
+            } else { 
+              sm.d = sm.STATE6;
+            }
+          }
+          
+        sm.STATE7:
+          io_adder0 = 1;
+          io_adder1 = 1;
+          io_adder2 = 1; 
+          io_led[0][7] = 1;
+          seg.values = {4hf, 4h1, 4h1, 4h1};
+          
+          if (customclk == 1) {
+            if (restart == 0 && bit0 == 1 && bit1 == 1) {
+              errorcount.d = 0;
+              sm.d = sm.END;
+            } else if (errorcheck == 1) {
+              sm.d = sm.ERR7;
+            } else if (restart == 1) {
+              sm.d = sm.STATE0;
+            } else { 
+              sm.d = sm.STATE7;
+            }
+          }
+          
+        sm.END:
+          io_adder0 = 0;
+          io_adder1 = 0;
+          io_adder2 = 0; 
+          io_led[2][0] = 1;
+          seg.values = {4hf, 4ha, 4hb, 4hc};
+          
+          if (customclk == 1) {
+            if (restart == 1) {
+              sm.d = sm.STATE0;
+            } else { 
+              sm.d = sm.END;
+            }
+          }
+        
+        sm.ERR0:
+          io_adder0 = 0;
+          io_adder1 = 0;
+          io_adder2 = 0; 
+          io_led[1][0] = 1;
+          seg.values = {4hf, 4ha, 4hd, 4hd};
+          errorcount.d = 0;
+          
+          if (customclk == 1) {
+            if (restart == 1) {
+              sm.d = sm.STATE0;
+            } else if (restart == 0 && bit0 == 0 && bit1 == 0) { 
+              sm.d = sm.STATE1;  // correct inputs for previous valid state will exit error state
+            } else { 
+              sm.d = sm.ERR0;
+            }
+          }
+          
+        sm.ERR1:
+          io_adder0 = 1;
+          io_adder1 = 0;
+          io_adder2 = 0; 
+          io_led[1][1] = 1;
+          seg.values = {4hf, 4ha, 4hd, 4hd};
+          errorcount.d = 0;
+          
+          if (customclk == 1) {
+            if (restart == 1) {
+              sm.d = sm.STATE0;
+            } else if (restart == 0 && bit0 == 1 && bit1 == 0) { 
+              sm.d = sm.STATE2;
+            } else { 
+              sm.d = sm.ERR1;
+            }
+          }
+          
+        sm.ERR2:
+          io_adder0 = 1;
+          io_adder1 = 1;
+          io_adder2 = 0; 
+          io_led[1][2] = 1;
+          seg.values = {4hf, 4ha, 4hd, 4hd};
+          errorcount.d = 0;
+          
+          if (customclk == 1) {
+            if (restart == 1) {
+              sm.d = sm.STATE0;
+            } else if (restart == 0 && bit0 == 0 && bit1 == 1) { 
+              sm.d = sm.STATE3;
+            } else { 
+              sm.d = sm.ERR2;
+            }
+          }
+          
+        sm.ERR3:
+          io_adder0 = 0;
+          io_adder1 = 1;
+          io_adder2 = 0; 
+          io_led[1][3] = 1;
+          seg.values = {4hf, 4ha, 4hd, 4hd};
+          errorcount.d = 0;
+          
+          if (customclk == 1) {
+            if (restart == 1) {
+              sm.d = sm.STATE0;
+            } else if (restart == 0 && bit0 == 1 && bit1 == 0) { 
+              sm.d = sm.STATE4;
+            } else { 
+              sm.d = sm.ERR3;
+            }
+          }
+          
+        sm.ERR4:
+          io_adder0 = 0;
+          io_adder1 = 1;
+          io_adder2 = 1; 
+          io_led[1][4] = 1;
+          seg.values = {4hf, 4ha, 4hd, 4hd};
+          errorcount.d = 0;
+          
+          if (customclk == 1) {
+            if (restart == 1) {
+              sm.d = sm.STATE0;
+            } else if (restart == 0 && bit0 == 0 && bit1 == 1) { 
+              sm.d = sm.STATE5;
+            } else { 
+              sm.d = sm.ERR4;
+            }
+          }
+          
+        sm.ERR5:
+          io_adder0 = 0;
+          io_adder1 = 0;
+          io_adder2 = 1; 
+          io_led[1][5] = 1;
+          seg.values = {4hf, 4ha, 4hd, 4hd};
+          errorcount.d = 0;
+          
+          if (customclk == 1) {
+            if (restart == 1) {
+              sm.d = sm.STATE0;
+            } else if (restart == 0 && bit0 == 1 && bit1 == 0) { 
+              sm.d = sm.STATE6;
+            } else { 
+              sm.d = sm.ERR5;
+            }
+          }
+          
+        sm.ERR6:
+          io_adder0 = 1;
+          io_adder1 = 0;
+          io_adder2 = 1; 
+          io_led[1][6] = 1;
+          seg.values = {4hf, 4ha, 4hd, 4hd};
+          errorcount.d = 0;
+          
+          if (customclk == 1) {
+            if (restart == 1) {
+              sm.d = sm.STATE0;
+            } else if (restart == 0 && bit0 == 0 && bit1 == 1) { 
+              sm.d = sm.STATE7;
+            } else { 
+              sm.d = sm.ERR6;
+            }
+          }
+          
+        sm.ERR7:
+          io_adder0 = 1;
+          io_adder1 = 1;
+          io_adder2 = 1; 
+          io_led[1][7] = 1;
+          seg.values = {4hf, 4ha, 4hd, 4hd};
+          errorcount.d = 0;
+          
+          if (customclk == 1) {
+            if (restart == 1) {
+              sm.d = sm.STATE0;
+            } else if (restart == 0 && bit0 == 1 && bit1 == 1) { 
+              sm.d = sm.END;
+            } else { 
+              sm.d = sm.ERR7;
+            }
+          }
+      }
+    } else {
+      io_adder0 = io_dip[0][0];  // manual testing mode switches
+      io_adder1 = io_dip[0][1];
+      io_adder2 = io_dip[0][2];
+    }
+  }
+}
